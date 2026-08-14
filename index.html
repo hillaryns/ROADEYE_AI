@@ -1,6 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PotholeGuard AI</title>
@@ -701,6 +707,72 @@ btnClear.addEventListener('click', () => {
   document.getElementById('statScans').textContent = 0;
   document.getElementById('statAvg').textContent = '0%';
 });
+let map;
+let userLocation = null;
+
+function initMap(lat = 12.9716, lng = 77.5946) {
+
+    map = L.map('map').setView([lat, lng], 15);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    L.marker([lat, lng])
+        .addTo(map)
+        .bindPopup('<b>Current Location</b>')
+        .openPopup();
+}
+
+function getUserLocation() {
+
+    if (!navigator.geolocation) {
+        document.getElementById('locationStatus').textContent =
+            'GPS unavailable';
+
+        initMap();
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+
+        position => {
+
+            userLocation = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+            };
+
+            document.getElementById('locationStatus').textContent =
+                'GPS connected';
+
+            initMap(
+                userLocation.lat,
+                userLocation.lng
+            );
+        },
+
+        error => {
+
+            console.log('GPS error:', error);
+
+            document.getElementById('locationStatus').textContent =
+                'Using demo location';
+
+            initMap();
+        }
+    );
+}
+
+window.addEventListener('load', getUserLocation); 
 </script>
+<div class="panel" style="margin-top:22px;">
+  <div class="panel-head">
+    <span class="panel-title">Live Pothole Map</span>
+    <span id="locationStatus">Locating...</span>
+  </div>
+
+  <div id="map" style="height:420px;"></div>
+</div>
 </body>
 </html>
