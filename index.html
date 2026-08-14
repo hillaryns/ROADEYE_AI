@@ -291,10 +291,7 @@
       <div class="panel-head"><span class="panel-title">Detection Feed</span></div>
       <div class="panel-body">
 
-        <div class="key-row">
-          <input type="text" id="apiKey" placeholder="Roboflow API key" />
-        </div>
-        <div class="key-note">Free key from <a href="https://universe.roboflow.com/mainproj/pothole-detection-i00zy-dwqjk" target="_blank">roboflow.com</a> &mdash; used only in-browser, never stored.</div>
+        <div class="key-note" id="backendNote">AI inference is routed through the local Flask server. Your Roboflow key stays on the server.</div>
 
         <div class="stage" id="stage">
           <div class="stage-empty" id="stageEmpty">
@@ -311,10 +308,13 @@
           <button class="primary" id="btnCamera">▶ Start Camera</button>
           <button id="btnCapture" disabled>◎ Capture &amp; Scan</button>
           <button id="btnUpload">⇪ Upload Image</button>
+          <button id="btnVideo">▣ Upload Video</button>
           <button id="btnStop" style="display:none;">■ Stop Camera</button>
+          <button id="btnStopVideo" style="display:none;">■ Stop Video Scan</button>
           <input type="file" id="fileInput" accept="image/*">
+          <input type="file" id="videoInput" accept="video/*">
         </div>
-        <div class="hint" id="hintText">Camera runs fully in-browser. Nothing is recorded — a captured frame is sent once to Roboflow for detection.</div>
+        <div class="hint" id="hintText">Camera runs fully in-browser. Nothing is recorded — a captured frame is sent once to Roboflow for detection. Video mode scans one frame about every 700ms.</div>
 
         <div class="readout" id="readout" style="display:none;">
           <div class="readout-cell sev-LOW" id="sevCell">
@@ -362,19 +362,24 @@ const stageEmpty = document.getElementById('stageEmpty');
 const btnCamera = document.getElementById('btnCamera');
 const btnCapture = document.getElementById('btnCapture');
 const btnUpload = document.getElementById('btnUpload');
+const btnVideo = document.getElementById('btnVideo');
 const btnStop = document.getElementById('btnStop');
+const btnStopVideo = document.getElementById('btnStopVideo');
 const btnClear = document.getElementById('btnClear');
 const fileInput = document.getElementById('fileInput');
+const videoInput = document.getElementById('videoInput');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const hintText = document.getElementById('hintText');
 const readout = document.getElementById('readout');
-const apiKeyInput = document.getElementById('apiKey');
 
 let stream = null;
 let reports = [];
 let scanCount = 0;
 let currentImageDataUrl = null; // the still frame currently on stage
+let videoScanTimer = null;
+let videoScanBusy = false;
+let uploadedVideoUrl = null;
 
 // ---------- demo GPS: jitter around a fixed base point each scan ----------
 const BASE_LAT = 12.9716, BASE_LNG = 77.5946; // Bengaluru
@@ -447,8 +452,116 @@ fileInput.addEventListener('change', (e) => {
   reader.readAsDataURL(file);
 });
 
+// ---------- video upload / scanning ----------
+btnVideo.addEventListener('click', () => videoInput.click());
+
+videoInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if(!file) return;
+
+  if(stream){
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+
+  if(videoScanTimer){
+    clearInterval(videoScanTimer);
+    videoScanTimer = null;
+  }
+
+  if(uploadedVideoUrl) URL.revokeObjectURL(uploadedVideoUrl);
+  uploadedVideoUrl = URL.createObjectURL(file);
+
+  video.srcObject = null;
+  video.src = uploadedVideoUrl;
+  video.loop = false;
+  video.muted = true;
+  video.controls = true;
+  video.style.display = 'block';
+  stillImg.style.display = 'none';
+  overlay.style.display = 'block';
+  stageEmpty.style.display = 'none';
+
+  btnCamera.style.display = 'inline-flex';
+  btnCapture.disabled = true;
+  btnStop.style.display = 'none';
+  btnStopVideo.style.display = 'inline-flex';
+
+  video.onloadedmetadata = async () => {
+    setStatus('Video ready — scanning', true);
+    try {
+      await video.play();
+      startVideoScanning();
+    } catch(err) {
+      setStatus('Press play to start video scan', false);
+    }
+  };
+
+  video.onended = () => {
+    stopVideoScanning();
+    setStatus('Video scan complete', false);
+  };
+});
+
+function startVideoScanning(){
+  stopVideoScanning();
+
+  const scanFrame = async () => {
+    if(video.paused || video.ended || videoScanBusy) return;
+    if(!video.videoWidth || !video.videoHeight) return;
+
+    videoScanBusy = true;
+
+    try{
+      const c = document.createElement('canvas');
+      c.width = video.videoWidth;
+      c.height = video.videoHeight;
+      c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+
+      const frameDataUrl = c.toDataURL('image/jpeg', 0.82);
+      currentImageDataUrl = frameDataUrl;
+
+      await runDetection(frameDataUrl, c.width, c.height, true);
+    }catch(err){
+      console.error('Video frame scan failed:', err);
+    }finally{
+      videoScanBusy = false;
+    }
+  };
+
+  scanFrame();
+  videoScanTimer = setInterval(scanFrame, 700);
+}
+
+function stopVideoScanning(){
+  if(videoScanTimer){
+    clearInterval(videoScanTimer);
+    videoScanTimer = null;
+  }
+  videoScanBusy = false;
+}
+
+btnStopVideo.addEventListener('click', () => {
+  stopVideoScanning();
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+
+  if(uploadedVideoUrl){
+    URL.revokeObjectURL(uploadedVideoUrl);
+    uploadedVideoUrl = null;
+  }
+
+  video.style.display = 'none';
+  overlay.style.display = 'none';
+  stageEmpty.style.display = 'flex';
+  btnStopVideo.style.display = 'none';
+  btnCapture.disabled = !stream;
+  setStatus('Video stopped', false);
+});
+
 // ---------- detection ----------
-async function runDetection(dataUrl, imgW, imgH){
+async function runDetection(dataUrl, imgW, imgH, fromVideo = false){
 
   stage.classList.add('scanning');
   setStatus('Scanning frame…', true);
@@ -458,14 +571,10 @@ async function runDetection(dataUrl, imgW, imgH){
   const MODEL = 'pothole-detection-i00zy-dwqjk/1';
 
   try{
-    const resp = await fetch('http://127.0.0.1:5000/detect',{
+    const resp = await fetch('http://127.0.0.1:5000/detect', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        image: base64
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64 })
     });
     if(!resp.ok){
       const t = await resp.text();
@@ -477,7 +586,7 @@ async function runDetection(dataUrl, imgW, imgH){
     handleResults(data, dataUrl, imgW, imgH);
   }catch(err){
     console.error(err);
-    alert('Detection failed: ' + err.message);
+    if(!fromVideo) alert('Detection failed: ' + err.message);
     setStatus('Detection failed', false);
   }finally{
     stage.classList.remove('scanning');
@@ -494,7 +603,7 @@ function handleResults(data, dataUrl, imgW, imgH){
   if(preds.length === 0){
     setStatus('No potholes detected', false);
     readout.style.display = 'none';
-    btnCapture.disabled = !stream;
+    btnCapture.disabled = !stream && !fromVideo;
     return;
   }
 
