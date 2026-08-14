@@ -449,11 +449,6 @@ fileInput.addEventListener('change', (e) => {
 
 // ---------- detection ----------
 async function runDetection(dataUrl, imgW, imgH){
-  const apiKey = apiKeyInput.value.trim();
-  if(!apiKey){
-    alert('Paste your Roboflow API key first (top-left field). It only takes a minute to get one free — see the link below the field.');
-    return;
-  }
 
   stage.classList.add('scanning');
   setStatus('Scanning frame…', true);
@@ -463,10 +458,14 @@ async function runDetection(dataUrl, imgW, imgH){
   const MODEL = 'pothole-detection-i00zy-dwqjk/1';
 
   try{
-    const resp = await fetch(`https://detect.roboflow.com/${MODEL}?api_key=${encodeURIComponent(apiKey)}&confidence=30`, {
+    const resp = await fetch('http://127.0.0.1:5000/detect',{
       method: 'POST',
-      body: base64,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        image: base64
+      })
     });
     if(!resp.ok){
       const t = await resp.text();
